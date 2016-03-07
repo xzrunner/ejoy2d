@@ -8,43 +8,51 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define SPRFLAG_INVISIBLE           (1)
-#define SPRFLAG_MESSAGE             (2)
-#define SPRFLAG_MULTIMOUNT          (4)
-#define SPRFLAG_FORCE_INHERIT_FRAME (8)
-
-struct material;
+#define SPRFLAG_INVISIBLE           	(1)
+#define SPRFLAG_MESSAGE             	(2)
+#define SPRFLAG_MULTIMOUNT          	(4)
+#define SPRFLAG_FORCE_INHERIT_FRAME 	(8)
+#define SPRFLAG_RANDOM_CHILD_BASE_FRAME (0x00000010)
 
 struct anchor_data {
-	struct particle_system *ps;
 	struct pack_picture *pic;
 	struct matrix mat;
 };
 
 struct sprite {
+	struct dtex_package* pkg;
+	int pkg_version;
+
 	struct sprite * parent;
-	struct sprite_pack * pack;
 	uint16_t type;
 	uint16_t id;
 	struct sprite_trans t;
 	union {
 		struct pack_animation *ani;
 		struct pack_picture *pic;
-		struct pack_polygon_data *poly;
+		struct pack_polygon *poly;
 		struct pack_label *label;
 		struct pack_pannel *pannel;
 		struct matrix *mat;
+		struct p3d_emitter_cfg* p3d;
+		struct p2d_emitter_cfg* p2d;
+		struct pack_p3d_spr* p3d_spr;
+		struct pack_shape* shape;
 	} s;
 	struct matrix mat;
 	int start_frame;
 	int total_frame;
 	int frame;
 	int flags;
+	int time;
 	const char *name;	// name for parent
-	struct material *material;
+	union {
+		struct p3d_sprite* p3d;
+		struct p2d_emitter* p2d;
+	} data_ext;			// data with children	
 	union {
 		struct sprite * children[1];
-		struct rich_text * rich_text;
+		const char* text;
 		int scissor;
 		struct anchor_data *anchor;
 	} data;
@@ -52,18 +60,22 @@ struct sprite {
 
 struct sprite_trans * sprite_trans_mul(struct sprite_trans *a, struct sprite_trans *b, struct sprite_trans *t, struct matrix *tmp_matrix);
 struct sprite_trans * sprite_trans_mul2(struct sprite_pack *pack, struct sprite_trans_data *a, struct sprite_trans *b, struct sprite_trans *t, struct matrix *tmp_matrix);
-void sprite_drawquad(struct pack_picture *picture, const struct srt *srt, const struct sprite_trans *arg);
-void sprite_drawpolygon(struct sprite_pack *pack, struct pack_polygon_data *poly, const struct srt *srt, const struct sprite_trans *arg);
+void sprite_drawquad(struct sprite* spr, struct pack_picture *picture, const struct srt *srt, const struct sprite_trans *arg);
 
 // sprite_size must be call before sprite_init
-int sprite_size(struct sprite_pack *pack, int id);
-void sprite_init(struct sprite *, struct sprite_pack * pack, int id, int sz);
+int sprite_size(struct dtex_package*, int id);
+void sprite_init(struct sprite *, struct dtex_package*, int id, int sz);
+
+bool sprite_pkg_valid(struct sprite*, int except);
 
 // return action frame number, -1 means action is not exist
 int sprite_action(struct sprite *, const char * action);
 
-void sprite_draw(struct sprite *, struct srt *srt);
-void sprite_draw_as_child(struct sprite *, struct srt *srt, struct matrix *mat, uint32_t color);
+uint32_t color4f(struct ps_color4f* c4f);
+
+void sprite_draw(struct sprite *, const struct srt *srt);
+void sprite_draw_with_trans(struct sprite*, const struct srt* srt, const struct sprite_trans* ts);
+void sprite_draw_as_child(struct sprite *, const struct srt *srt, struct matrix *mat, uint32_t color);
 struct sprite * sprite_test(struct sprite *, struct srt *srt, int x, int y);
 
 // return child index, -1 means not found
@@ -81,7 +93,6 @@ int sprite_pos(struct sprite *s, struct srt *srt, struct matrix *m, int pos[2]);
 void sprite_matrix(struct sprite *s, struct matrix *mat);
 
 bool sprite_child_visible(struct sprite *s, const char * childname);
-int material_size(int program);
 
 int ejoy2d_sprite(lua_State *L);
 

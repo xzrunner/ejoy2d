@@ -1,6 +1,21 @@
 .PHONY : mingw ej2d linux undefined
 
-CFLAGS = -g -Wall -Ilib -Ilib/render -Ilua -D EJOY2D_OS=$(OS) -D FONT_EDGE_HASH
+OUTSIDE:=..
+
+CFLAGS = -g -Wall -std=gnu99 -Ilib -Ilib/render -Ilib/adapter -Ilua -D EJOY2D_OS=$(OS) -D FONT_EDGE_HASH \
+-I$(OUTSIDE)/ps \
+-I$(OUTSIDE)/dtex \
+-I$(OUTSIDE)/gtxt \
+-I$(OUTSIDE)/shaderlab \
+-I$(OUTSIDE)/RapidVG \
+-I$(OUTSIDE)/thirdparty/glew/include \
+-I$(OUTSIDE)/thirdparty/pthread/include \
+-I$(OUTSIDE)/thirdparty/cjson \
+-I$(OUTSIDE)/thirdparty/lzma \
+-I$(OUTSIDE)/thirdparty/freetype/include
+
+LIBS = $(OUTSIDE)/thirdparty/pthread/libpthreadGC2.a
+
 LDFLAGS :=
 
 RENDER := \
@@ -8,29 +23,41 @@ lib/render/render.c \
 lib/render/carray.c \
 lib/render/log.c
 
+ADAPTER := \
+lib/adapter/ej_dtex.c \
+lib/adapter/ej_gtxt.c \
+lib/adapter/ej_ps.c \
+lib/adapter/ej_rvg.c \
+lib/adapter/ej_shaderlab.c \
+lib/adapter/ej_utility.c \
+
 EJOY2D := \
-lib/shader.c \
-lib/lshader.c \
 lib/ejoy2dgame.c \
 lib/fault.c \
-lib/screen.c \
-lib/texture.c \
-lib/ppm.c \
-lib/spritepack.c \
-lib/sprite.c \
+lib/lmatrix.c \
 lib/lsprite.c \
 lib/matrix.c \
-lib/lmatrix.c \
-lib/dfont.c \
-lib/label.c \
-lib/particle.c \
-lib/lparticle.c \
 lib/scissor.c \
-lib/renderbuffer.c \
-lib/lrenderbuffer.c \
-lib/lgeometry.c
+lib/sprite.c \
+lib/screen.c \
+lib/spritepack.c
 
-SRC := $(EJOY2D) $(RENDER)
+CJSON := $(OUTSIDE)/thirdparty/cjson/cJSON.c
+
+LZMA := $(wildcard $(OUTSIDE)/thirdparty/lzma/*.c)
+
+PS := $(wildcard $(OUTSIDE)/ps/*.c)
+DTEX := $(wildcard $(OUTSIDE)/dtex/*.c)
+GTXT := $(wildcard $(OUTSIDE)/gtxt/*.c)
+SL := $(wildcard $(OUTSIDE)/shaderlab/*.c)
+RVG := $(wildcard $(OUTSIDE)/RapidVG/*.c)
+
+SRC := $(EJOY2D) $(RENDER) $(ADAPTER) $(CJSON) $(LZMA) \
+$(PS) \
+$(DTEX) \
+$(GTXT) \
+$(SL) \
+$(RVG)
 
 LUASRC := \
 lua/lapi.c \
@@ -84,9 +111,10 @@ undefined:
 
 mingw : OS := WINDOWS
 mingw : TARGET := ej2d.exe
-mingw : CFLAGS += -I/usr/include
-mingw : LDFLAGS += -L/usr/bin -lgdi32 -lglew32 -lopengl32
-mingw : SRC += mingw/window.c mingw/winfw.c mingw/winfont.c
+mingw : CFLAGS += -I/usr/include -L$(OUTSIDE)/thirdparty/glew/lib -DGLEW_STATIC
+mingw : LDFLAGS += -L/usr/bin -L$(OUTSIDE)/thirdparty/pthread -L$(OUTSIDE)/thirdparty/freetype -lgdi32 -lglew32s -lfreetype -lopengl32 
+mingw : SRC += mingw/window.c mingw/winfw.c
+mingw : LINK := $(OUTSIDE)/thirdparty/pthread/pthreadGC2.dll
 
 mingw : $(SRC) ej2d
 
@@ -119,7 +147,7 @@ macosx : SRC += mac/example/example/window.c posix/winfw.c mac/example/example/w
 macosx : $(SRC) ej2d
 
 ej2d :
-	$(CC) $(CFLAGS) -o $(TARGET) $(SRC) $(LUASRC) $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $(TARGET) $(SRC) $(LUASRC) $(LDFLAGS) $(LIBS)
 
 clean :
 	-rm -f ej2d.exe

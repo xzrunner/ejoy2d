@@ -4,18 +4,19 @@
 #include <assert.h>
 #include <stdlib.h>
 
+#include <dtex.h>
+#include <shaderlab.h>
+
 #include "ejoy2dgame.h"
 #include "fault.h"
-#include "shader.h"
-#include "texture.h"
-#include "ppm.h"
 #include "spritepack.h"
 #include "sprite.h"
 #include "lmatrix.h"
-#include "label.h"
-#include "particle.h"
-#include "lrenderbuffer.h"
-#include "lgeometry.h"
+#include "screen.h"
+#include "adapter/ej_dtex.h"
+#include "adapter/ej_gtxt.h"
+#include "adapter/ej_ps.h"
+#include "adapter/ej_shaderlab.h"
 
 //#define LOGIC_FRAME 30
 
@@ -112,20 +113,19 @@ ejoy2d_init(lua_State *L) {
 	lua_pushliteral(L, OS_STRING);
 	lua_setglobal(L , "OS");
 
-	luaL_requiref(L, "ejoy2d.shader.c", ejoy2d_shader, 0);
+	ej_ps_set_lua_state(L);
+
 	luaL_requiref(L, "ejoy2d.framework", ejoy2d_framework, 0);
-	luaL_requiref(L, "ejoy2d.ppm", ejoy2d_ppm, 0);
 	luaL_requiref(L, "ejoy2d.spritepack.c", ejoy2d_spritepack, 0);
 	luaL_requiref(L, "ejoy2d.sprite.c", ejoy2d_sprite, 0);
-	luaL_requiref(L, "ejoy2d.renderbuffer", ejoy2d_renderbuffer, 0);
 	luaL_requiref(L, "ejoy2d.matrix.c", ejoy2d_matrix, 0);
-	luaL_requiref(L, "ejoy2d.particle.c", ejoy2d_particle, 0);
-	luaL_requiref(L, "ejoy2d.geometry.c", ejoy2d_geometry, 0);
 
 	lua_settop(L,0);
 
-	shader_init();
-	label_load();
+	ej_sl_create();
+	ej_dtex_init();
+	ej_gtxt_init();
+	ej_ps_init();
 }
 
 struct game *
@@ -156,9 +156,7 @@ ejoy2d_close_lua(struct game *G) {
 void
 ejoy2d_game_exit(struct game *G) {
 	ejoy2d_close_lua(G);
-	label_unload();
-	texture_exit();
-	shader_unload();
+	ej_sl_release();
 }
 
 lua_State *
@@ -264,6 +262,8 @@ ejoy2d_call_lua(lua_State *L, int n, int r) {
 
 static void
 logic_frame(lua_State *L) {
+	dtexf_update();
+
 	lua_pushvalue(L, UPDATE_FUNCTION);
 	call(L, 0, 0);
 	lua_settop(L, TOP_FUNCTION);
@@ -278,18 +278,33 @@ ejoy2d_game_update(struct game *G, float time) {
 	}
 	while (G->logic_time < G->real_time) {
 		logic_frame(G->L);
+		float dt = 1.0f/LOGIC_FRAME;
+		G->logic_time += dt;
+		ej_ps_update(dt);
 		G->logic_time += 1.0f/LOGIC_FRAME;
 	}
 }
 
 void
 ejoy2d_game_drawframe(struct game *G) {
-	reset_drawcall_count();
+	// reset_drawcall_count();
+	dtexf_cs_bind();
+
 	lua_pushvalue(G->L, DRAWFRAME_FUNCTION);
 	call(G->L, 0, 0);
 	lua_settop(G->L, TOP_FUNCTION);
-	shader_flush();
-	label_flush();
+
+	sl_shader_flush();
+	ej_sl_commit();
+
+	dtexf_cs_unbind();
+
+	dtexf_cs_draw_to_screen(NULL, NULL);
+
+
+
+	// shader_flush();
+	// label_flush();
 	//int cnt = drawcall_count();
 	//printf("-> %d\n", cnt);
 }

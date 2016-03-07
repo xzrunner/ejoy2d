@@ -2,18 +2,14 @@
 #include "matrix.h"
 #include "array.h"
 
-#ifndef EXPORT_EP
-
-#include "shader.h"
-#include "texture.h"
-
-#endif // EXPORT_EP
-
 #include <lua.h>
 #include <lauxlib.h>
 
 #include <stdint.h>
 #include <string.h>
+
+#define DEGREES_TO_RADIANS(__ANGLE__) ((__ANGLE__) * 0.01745329252f) // PI / 180
+#define RADIANS_TO_DEGREES(__ANGLE__) ((__ANGLE__) * 57.29577951f) // PI * 180
 
 #define TAG_ID 1
 #define TAG_COLOR 2
@@ -21,8 +17,7 @@
 #define TAG_MATRIX 8
 #define TAG_TOUCH 16
 #define TAG_MATRIXREF 32
-
-#ifndef EXPORT_EP
+#define TAG_COLMAP 64
 
 struct import_alloc {
 	lua_State *L;
@@ -83,6 +78,19 @@ import_word(struct import_stream *is) {
 	return low | (uint32_t)high << 8;
 }
 
+static int
+import_signed_word(struct import_stream *is) {
+	if (is->size < 2) {
+		luaL_error(is->alloc->L, "Invalid import stream (%d)", is->current_id);
+	}
+	uint8_t low = (uint8_t)*(is->stream);
+	int8_t high = (int8_t)*(is->stream+1);
+	is->stream += 2;
+	is->size -= 2;
+
+	return low | (int32_t)high << 8;
+}
+
 static int32_t
 import_int32(struct import_stream *is) {
 	if (is->size < 4) {
@@ -125,7 +133,7 @@ get_texid(struct import_stream *is, int texid) {
 
 static void
 import_picture(struct import_stream *is) {
-	int n = import_byte(is);
+	int n = import_word(is);
 	struct pack_picture * pp = (struct pack_picture *)ialloc(is->alloc, SIZEOF_PICTURE + n * SIZEOF_QUAD);
 	pp->n = n;
 	int i,j;
@@ -136,8 +144,8 @@ import_picture(struct import_stream *is) {
 		for (j=0;j<8;j+=2) {
 			float x = (float)import_word(is);
 			float y = (float)import_word(is);
-			// todo: check the return value
-			texture_coord(q->texid, x, y, &q->texture_coord[j], &q->texture_coord[j+1]);
+			q->texture_coord[j] = (uint16_t)x;
+			q->texture_coord[j+1] = (uint16_t)y;
 		}
 		for (j=0;j<8;j++) {
 			q->screen_coord[j] = import_int32(is);
@@ -145,38 +153,11 @@ import_picture(struct import_stream *is) {
 	}
 }
 
-static void
-import_polygon(struct import_stream *is) {
-	int n = import_byte(is);
-	struct pack_polygon_data * pp = (struct pack_polygon_data *)ialloc(is->alloc, SIZEOF_POLYGON + n * SIZEOF_POLY);
-	pp->n = n;
-	int i,j;
-	for (i=0;i<n;i++) {
-		struct pack_poly_data * p = &pp->poly[i];
-		int texid = import_byte(is);
-		p->texid = get_texid(is, texid);
-		p->n = import_byte(is);
-		uv_t * tc = (uv_t *)ialloc(is->alloc, p->n * 2 * sizeof(uv_t));
-		int32_t * sc = (int32_t *)ialloc(is->alloc, p->n * 2 * sizeof(uint32_t));
-		p->texture_coord = POINTER_TO_OFFSET(is->pack, tc);
-		p->screen_coord = POINTER_TO_OFFSET(is->pack, sc);
-		for (j=0;j<p->n*2;j+=2) {
-			float x = (float)import_word(is);
-			float y = (float)import_word(is);
-			// todo: check the return value
-			texture_coord(p->texid, x, y, &tc[j], &tc[j+1]);
-		}
-		for (j=0;j<p->n*2;j++) {
-			sc[j] = import_int32(is);
-		}
-	}
-}
-
-static offset_t
+static const char *
 import_string(struct import_stream *is) {
 	int n = import_byte(is);
 	if (n==255) {
-		return 0;
+		return NULL;
 	}
 	if (is->size < n) {
 		luaL_error(is->alloc->L, "Invalid stream (%d): read string failed", is->current_id);
@@ -187,18 +168,17 @@ import_string(struct import_stream *is) {
 	is->stream += n;
 	is->size -= n;
 
-	return POINTER_TO_OFFSET(is->pack, buf);
+	return buf;
 }
 
 static void
 import_frame(struct pack_frame * pf, struct import_stream *is, int maxc) {
 	int n = import_word(is);
 	int i;
-	struct pack_part * part = (struct pack_part *)ialloc(is->alloc, n * SIZEOF_PART);
-	pf->part = POINTER_TO_OFFSET(is->pack, part);
+	pf->part = (struct pack_part *)ialloc(is->alloc, n * SIZEOF_PART);
 	pf->n = n;
 	for (i=0;i<n;i++) {
-		struct pack_part *pp = &part[i];
+		struct pack_part *pp = &pf->part[i];
 		int tag = import_byte(is);
 		if (tag & TAG_ID) {
 			pp->component_id = import_word(is);
@@ -209,9 +189,8 @@ import_frame(struct pack_frame * pf, struct import_stream *is, int maxc) {
 			luaL_error(is->alloc->L, "Invalid stream (%d): frame part need an id", is->current_id);
 		}
 		if (tag & TAG_MATRIX) {
-			struct matrix *mat = (struct matrix *)ialloc(is->alloc, SIZEOF_MATRIX);
-			pp->t.mat = POINTER_TO_OFFSET(is->pack, mat);
-			int32_t *m = mat->m;
+			pp->t.mat = (struct matrix *)ialloc(is->alloc, SIZEOF_MATRIX);
+			int32_t *m = pp->t.mat->m;
 			int j;
 			for (j=0;j<6;j++) {
 				m[j] = import_int32(is);
@@ -221,9 +200,9 @@ import_frame(struct pack_frame * pf, struct import_stream *is, int maxc) {
 			if (ref >= is->matrix_n) {
 				luaL_error(is->alloc->L, "Invalid stream (%d): no martix ref %d", is->current_id, ref);
 			}
-			pp->t.mat = POINTER_TO_OFFSET(is->pack, &is->matrix[ref]);
+			pp->t.mat = &is->matrix[ref];
 		} else {
-			pp->t.mat = 0;
+			pp->t.mat = NULL;
 		}
 		if (tag & TAG_COLOR) {
 			pp->t.color = import_color(is);
@@ -241,6 +220,17 @@ import_frame(struct pack_frame * pf, struct import_stream *is, int maxc) {
 		} else {
 			pp->touchable = 0;
 		}
+		if (tag & TAG_COLMAP) {
+			pp->t.rmap = import_color(is);
+			pp->t.gmap = import_color(is);
+			pp->t.bmap = import_color(is);
+		} else {
+			pp->t.rmap = 0xff0000ff;
+			pp->t.gmap = 0x00ff00ff;
+			pp->t.bmap = 0x0000ffff;
+		}
+		// todo: support other program
+		pp->t.program = /*PROGRAM_DEFAULT*/0;
 	}
 }
 
@@ -259,35 +249,44 @@ import_animation(struct import_stream *is) {
 		pa->component[i].name = import_string(is);
 	}
 	pa->action_number = import_word(is);
-	struct pack_action * action = (struct pack_action *)ialloc(is->alloc, SIZEOF_ACTION * pa->action_number);
-	pa->action = POINTER_TO_OFFSET(is->pack, action);
+	pa->action = (struct pack_action *)ialloc(is->alloc, SIZEOF_ACTION * pa->action_number);
 	int frame = 0;
 	for (i=0;i<pa->action_number;i++) {
-		action[i].name = import_string(is);
-		action[i].number = import_word(is);
-		action[i].start_frame = frame;
-		frame += action[i].number;
+		pa->action[i].name = import_string(is);
+		pa->action[i].number = import_word(is);
+		pa->action[i].start_frame = frame;
+		frame += pa->action[i].number;
 	}
 	pa->frame_number = import_word(is);
-	struct pack_frame * pf = (struct pack_frame *)ialloc(is->alloc, SIZEOF_FRAME * pa->frame_number);
-	pa->frame = POINTER_TO_OFFSET(is->pack, pf);
+	pa->frame = (struct pack_frame *)ialloc(is->alloc, SIZEOF_FRAME * pa->frame_number);
 	for (i=0;i<pa->frame_number;i++) {
-		import_frame(&pf[i], is, component);
+		import_frame(&pa->frame[i], is, component);
 	}
 }
 
 static void
 import_label(struct import_stream *is) {
 	struct pack_label * pl = (struct pack_label *)ialloc(is->alloc, SIZEOF_LABEL);
-	pl->align = import_byte(is);
-	pl->color = import_color(is);
-	pl->size = import_word(is);
+
 	pl->width = import_word(is);
 	pl->height = import_word(is);
+
+	pl->font = import_byte(is);
+	pl->font_size = import_byte(is);
+	pl->font_color = import_color(is);
+
 	pl->edge = import_byte(is);
-    pl->space_w = import_byte(is);
-    pl->space_h = import_byte(is);
-    pl->auto_scale = import_byte(is);
+	pl->edge_size = import_word(is) / 1024.0f;
+	pl->edge_color = import_color(is);
+
+	pl->align_hori = import_byte(is);
+	pl->align_vert = import_byte(is);
+
+	pl->space_hori = import_word(is) / 1024.0f;
+	pl->space_vert = import_word(is) / 1024.0f;
+
+	pl->text = import_string(is);
+	pl->tid = import_string(is);
 }
 
 static void
@@ -296,6 +295,214 @@ import_pannel(struct import_stream *is) {
 	pp->width = import_int32(is);
 	pp->height = import_int32(is);
 	pp->scissor = import_byte(is);
+}
+
+static void
+import_particle3d(struct import_stream *is) {
+	int n = import_word(is);
+
+	int sz = SIZEOF_PARTICLE3D + SIZEOF_P3D_SYMBOL * n;
+	struct p3d_emitter_cfg* cfg = (struct p3d_emitter_cfg*)ialloc(is->alloc, sz);
+	memset(cfg, 0, sz);
+
+	cfg->symbol_count = n;
+	cfg->symbols = (struct p3d_symbol*)(cfg + 1);
+	for (int i = 0; i < n; ++i)
+	{
+		struct p3d_symbol* dst = &cfg->symbols[i];
+
+		uint16_t id = import_word(is);
+		dst->ud = (void*)(id << 16 | i);
+
+		dst->scale_start = import_word(is) * 0.01f;
+		dst->scale_end = import_word(is) * 0.01f;
+
+		dst->angle = DEGREES_TO_RADIANS(import_signed_word(is));
+		dst->angle_var = DEGREES_TO_RADIANS(import_word(is));
+
+		uint32_t mul = import_color(is);
+		dst->col_mul.a = (mul >> 24 & 0xff) / 255.0f;
+		dst->col_mul.r = (mul >> 16 & 0xff) / 255.0f;
+		dst->col_mul.g = (mul >> 8 & 0xff) / 255.0f;
+		dst->col_mul.b = (mul & 0xff) / 255.0f;
+
+		uint32_t add = import_color(is);
+		dst->col_add.a = (add >> 24 & 0xff) / 255.0f;
+		dst->col_add.r = (add >> 16 & 0xff) / 255.0f;
+		dst->col_add.g = (add >> 8 & 0xff) / 255.0f;
+		dst->col_add.b = (add & 0xff) / 255.0f;
+
+		dst->alpha_start = import_word(is) / 255.0f;
+		dst->alpha_end = import_word(is) / 255.0f;
+	}
+
+	cfg->emission_time = import_word(is) * 0.001f;
+	cfg->count = import_word(is);
+
+	cfg->life = import_word(is) * 0.001f;
+	cfg->life_var = import_word(is) * 0.001f;
+
+	cfg->hori = DEGREES_TO_RADIANS(import_signed_word(is));
+	cfg->hori_var = DEGREES_TO_RADIANS(import_word(is));
+	cfg->vert = DEGREES_TO_RADIANS(import_signed_word(is));
+	cfg->vert_var = DEGREES_TO_RADIANS(import_word(is));
+
+	cfg->radial_spd = import_word(is);
+	cfg->radial_spd_var = import_word(is);
+	cfg->tangential_spd = import_word(is);
+	cfg->tangential_spd_var = import_word(is);
+	cfg->angular_spd = DEGREES_TO_RADIANS(import_signed_word(is));
+	cfg->angular_spd_var = DEGREES_TO_RADIANS(import_word(is));
+
+	cfg->dis_region = import_word(is);
+	cfg->dis_region_var = import_word(is);
+	cfg->dis_spd = import_word(is);
+	cfg->dis_spd_var = import_word(is);
+
+	cfg->gravity = import_signed_word(is);
+
+	cfg->linear_acc = import_signed_word(is);
+	cfg->linear_acc_var = import_word(is);
+
+	cfg->fadeout_time = import_word(is) * 0.001f;
+
+	cfg->ground = import_byte(is);
+
+	cfg->start_radius = import_word(is);
+	cfg->start_height = import_signed_word(is);
+
+	cfg->orient_to_movement = import_byte(is);
+
+	// todo dir
+	cfg->dir.x = 0;
+	cfg->dir.y = 0;
+	cfg->dir.z = 1;
+}
+
+static void
+import_particle2d(struct import_stream *is) {
+	int n = import_word(is);
+
+	int sz = SIZEOF_PARTICLE2D + SIZEOF_P2D_SYMBOL * n;
+	struct p2d_emitter_cfg* cfg = (struct p2d_emitter_cfg*)ialloc(is->alloc, sz);
+	memset(cfg, 0, sz);
+
+	cfg->symbol_count = n;
+	cfg->symbols = (struct p2d_symbol*)(cfg + 1);
+	for (int i = 0; i < n; ++i)
+	{
+		struct p2d_symbol* dst = &cfg->symbols[i];
+
+		uint16_t id = import_word(is);
+		dst->ud = (void*)(id << 16 | i);
+
+		dst->angle_start = DEGREES_TO_RADIANS(import_word(is));
+		dst->angle_end = DEGREES_TO_RADIANS(import_word(is));
+
+		dst->scale_start = import_word(is) * 0.01f;
+		dst->scale_end = import_word(is) * 0.01f;
+
+		uint32_t col_mul_start = import_color(is);
+		dst->col_mul_start.a = (col_mul_start >> 24 & 0xff) / 255.0f;
+		dst->col_mul_start.r = (col_mul_start >> 16 & 0xff) / 255.0f;
+		dst->col_mul_start.g = (col_mul_start >> 8 & 0xff) / 255.0f;
+		dst->col_mul_start.b = (col_mul_start & 0xff) / 255.0f;
+
+		uint32_t col_mul_end = import_color(is);
+		dst->col_mul_end.a = (col_mul_end >> 24 & 0xff) / 255.0f;
+		dst->col_mul_end.r = (col_mul_end >> 16 & 0xff) / 255.0f;
+		dst->col_mul_end.g = (col_mul_end >> 8 & 0xff) / 255.0f;
+		dst->col_mul_end.b = (col_mul_end & 0xff) / 255.0f;
+
+		uint32_t col_add_start = import_color(is);
+		dst->col_add_start.a = (col_add_start >> 24 & 0xff) / 255.0f;
+		dst->col_add_start.r = (col_add_start >> 16 & 0xff) / 255.0f;
+		dst->col_add_start.g = (col_add_start >> 8 & 0xff) / 255.0f;
+		dst->col_add_start.b = (col_add_start & 0xff) / 255.0f;
+
+		uint32_t col_add_end = import_color(is);
+		dst->col_add_end.a = (col_add_end >> 24 & 0xff) / 255.0f;
+		dst->col_add_end.r = (col_add_end >> 16 & 0xff) / 255.0f;
+		dst->col_add_end.g = (col_add_end >> 8 & 0xff) / 255.0f;
+		dst->col_add_end.b = (col_add_end & 0xff) / 255.0f;
+	}
+
+	cfg->emission_time = import_word(is) * 0.001f;
+	cfg->count = import_word(is);
+
+	cfg->life = import_word(is) * 0.001f;
+	cfg->life_var = import_word(is) * 0.001f;
+
+	cfg->position.x = import_word(is);
+	cfg->position.y = import_word(is);
+	cfg->position_var.x = import_word(is);
+	cfg->position_var.y = import_word(is);
+
+	cfg->direction = DEGREES_TO_RADIANS(import_word(is));
+	cfg->direction_var = DEGREES_TO_RADIANS(import_word(is));
+
+	cfg->mode_type = import_byte(is);
+
+	if (cfg->mode_type == P2D_MODE_GRAVITY)
+	{
+		cfg->mode.A.gravity.x = import_word(is);
+		cfg->mode.A.gravity.y = import_word(is);
+
+		cfg->mode.A.speed = import_word(is);
+		cfg->mode.A.speed_var = import_word(is);
+
+		cfg->mode.A.tangential_accel = import_word(is);
+		cfg->mode.A.tangential_accel_var = import_word(is);
+		cfg->mode.A.radial_accel = import_word(is);
+		cfg->mode.A.radial_accel_var = import_word(is);
+
+		cfg->mode.A.rotation_is_dir = import_byte(is);
+	}
+	else if (cfg->mode_type == P2D_MODE_RADIUS)
+	{
+		cfg->mode.B.start_radius = import_byte(is);
+		cfg->mode.B.start_radius_var = import_byte(is);
+		cfg->mode.B.end_radius = import_byte(is);
+		cfg->mode.B.end_radius_var = import_byte(is);
+
+		cfg->mode.B.direction_delta = import_byte(is);
+		cfg->mode.B.direction_delta_var = import_byte(is);
+	}
+	else if (cfg->mode_type == P2D_MODE_SPD_COS)
+	{
+		cfg->mode.C.speed = import_byte(is);
+		cfg->mode.C.speed_var = import_byte(is);
+
+		cfg->mode.C.cos_amplitude = import_byte(is);
+		cfg->mode.C.cos_amplitude_var = import_byte(is);
+		cfg->mode.C.cos_frequency = import_byte(is);
+		cfg->mode.C.cos_frequency_var = import_byte(is);
+	}
+}
+
+static void
+import_p3d_spr(struct import_stream *is) {
+	struct pack_p3d_spr* spr = (struct pack_p3d_spr*)ialloc(is->alloc, SIZEOF_P3D_SPR);
+	spr->id = import_word(is);
+	spr->loop = import_byte(is);
+	spr->local = import_byte(is);
+	spr->alone = import_byte(is);
+	spr->reuse = import_byte(is);
+}
+
+static void
+import_shape(struct import_stream *is) {
+	struct pack_shape* ps = (struct pack_shape*)ialloc(is->alloc, SIZEOF_SHAPE);
+	ps->type = import_byte(is);
+	ps->color = import_color(is);
+	ps->num = import_word(is);
+
+	ps->vertices = (int32_t*)ialloc(is->alloc, ps->num * 2 * sizeof(int32_t));
+	int ptr = 0;
+	for (int i = 0; i < ps->num; ++i) {
+		ps->vertices[ptr++] = import_int32(is);
+		ps->vertices[ptr++] = import_int32(is);
+	}
 }
 
 static void
@@ -326,13 +533,11 @@ import_sprite(struct import_stream *is) {
 		luaL_error(is->alloc->L, "Invalid stream : wrong id %d", id);
 	}
 	is->current_id = id;
-	uint8_t * type_array = OFFSET_TO_POINTER(uint8_t, is->pack, is->pack->type);
-	type_array[id] = type;
-	offset_t * data = OFFSET_TO_POINTER(offset_t, is->pack, is->pack->data);
-	if (data[id] != 0) {
+	is->pack->type[id] = type;
+	if (is->pack->data[id]) {
 		luaL_error(is->alloc->L, "Invalid stream : duplicate id %d", id);
 	}
-	data[id] = POINTER_TO_OFFSET(is->pack, is->alloc->buffer);
+	is->pack->data[id] = is->alloc->buffer;
 	switch (type) {
 	case TYPE_PICTURE:
 		import_picture(is);
@@ -340,14 +545,23 @@ import_sprite(struct import_stream *is) {
 	case TYPE_ANIMATION:
 		import_animation(is);
 		break;
-	case TYPE_POLYGON:
-		import_polygon(is);
-		break;
 	case TYPE_LABEL:
 		import_label(is);
 		break;
 	case TYPE_PANNEL:
 		import_pannel(is);
+		break;
+	case TYPE_PARTICLE3D:
+		import_particle3d(is);
+		break;
+	case TYPE_PARTICLE2D:
+		import_particle2d(is);
+		break;
+	case TYPE_P3D_SPR:
+		import_p3d_spr(is);
+		break;
+	case TYPE_SHAPE:
+		import_shape(is);
 		break;
 	default:
 		luaL_error(is->alloc->L, "Invalid stream : Unknown type %d, id=%d", type, id);
@@ -391,12 +605,10 @@ limport(lua_State *L) {
 	struct sprite_pack *pack = (struct sprite_pack *)ialloc(&alloc, SIZEOF_PACK + tex * sizeof(int));
 	pack->n = max_id + 1;
 	int align_n = (pack->n + 3) & ~3;
-	uint8_t * type = (uint8_t *)ialloc(&alloc, align_n * sizeof(uint8_t));
-	pack->type = POINTER_TO_OFFSET(pack, type);
-	memset(type, 0, align_n * sizeof(uint8_t));
-	offset_t *data = (offset_t *)ialloc(&alloc, pack->n * sizeof(offset_t));
-	pack->data = POINTER_TO_OFFSET(pack, data);
-	memset(data, 0, pack->n * sizeof(offset_t));
+	pack->type = (uint8_t *)ialloc(&alloc, align_n * sizeof(uint8_t));
+	memset(pack->type, 0, align_n * sizeof(uint8_t));
+	pack->data = (void **)ialloc(&alloc, pack->n * SIZEOF_POINTER);
+	memset(pack->data, 0, pack->n * SIZEOF_POINTER);
 
 	if (lua_istable(L,1)) {
 		int i;
@@ -430,10 +642,12 @@ limport(lua_State *L) {
 		import_sprite(&is);
 	}
 
+// 	if (is.alloc->cap != 0) {
+// 		luaL_error(L, "Invalid import stream: unpack size");
+// 	}
+
 	return 1;
 }
-
-#endif // EXPORT_EP
 
 static int32_t
 readinteger(lua_State *L, int idx) {
@@ -542,6 +756,9 @@ lpackframetag(lua_State *L) {
 		case 'M':
 			tag |= TAG_MATRIXREF;
 			break;
+		case 'C':
+			tag |= TAG_COLMAP;
+			break;
 		default:
 			return luaL_error(L, "Invalid tag %s", tagstr);
 			break;
@@ -578,7 +795,7 @@ lpack_size(lua_State *L) {
 	int align_n = (max_id + 1 + 3) & ~3;
 	int size = SIZEOF_PACK
 		+ align_n * sizeof(uint8_t)
-		+ (max_id+1) * sizeof(offset_t)
+		+ (max_id+1) * SIZEOF_POINTER
 		+ tex * sizeof(int);
 
 	lua_pushinteger(L, size);
@@ -647,27 +864,62 @@ lpannel_size(lua_State *L) {
 	return 1;
 }
 
-#ifndef EXPORT_EP
-
 void
 dump_pack(struct sprite_pack *pack) {
 	if (pack == NULL)
 		return;
 	int i;
-	uint8_t *type = OFFSET_TO_POINTER(uint8_t, pack, pack->type);
-	offset_t *data = OFFSET_TO_POINTER(offset_t, pack, pack->data);
 	for (i=0;i<pack->n;i++) {
-		if (type[i] == TYPE_PICTURE)
+		if (pack->type[i] == TYPE_PICTURE)
 			printf("%d : PICTURE\n", i);
 		else {
-			struct pack_animation *ani = OFFSET_TO_POINTER(struct pack_animation, pack, data[i]);
+			struct pack_animation *ani = (struct pack_animation *)pack->data[i];
 			printf("%d : ANIMATION %d\n", i, ani->component_number);
 			int i;
 			for (i=0;i<ani->component_number;i++) {
-				printf("\t%d %s\n",ani->component[i].id, ani->component[i].name ? OFFSET_TO_STRING(pack, ani->component[i].name) : "");
+				printf("\t%d %s\n",ani->component[i].id, ani->component[i].name ? ani->component[i].name : "");
 			}
 		}
 	}
+}
+
+struct sprite_pack* 
+ej_pkg_import(void* data, int sz, int tex, int max_id, int cap) {
+	struct import_alloc alloc;
+	alloc.L = NULL;
+	alloc.buffer = malloc(cap);
+	alloc.cap = cap;
+
+	struct sprite_pack *pack = (struct sprite_pack *)ialloc(&alloc, SIZEOF_PACK + tex * sizeof(int));
+	pack->n = max_id + 1;
+	int align_n = (pack->n + 3) & ~3;
+	pack->type = (uint8_t *)ialloc(&alloc, align_n * sizeof(uint8_t));
+	memset(pack->type, 0, align_n * sizeof(uint8_t));
+	pack->data = (void **)ialloc(&alloc, pack->n * SIZEOF_POINTER);
+	memset(pack->data, 0, pack->n * SIZEOF_POINTER);
+	for (int i = 0; i < tex; ++i) {
+		pack->tex[i] = i;
+	}
+
+	struct import_stream is;
+	is.alloc = &alloc;
+	is.pack = pack;
+	is.maxtexture = tex;
+	is.current_id = -1;
+	is.matrix = NULL;
+	is.matrix_n = 0;
+	is.stream = data;
+	is.size = sz;
+
+	while (is.size != 0) {
+		import_sprite(&is);
+	}
+
+	// 	if (is.alloc->cap != 0) {
+	// 		luaL_error(L, "Invalid import stream: unpack size");
+	// 	}
+
+	return pack;
 }
 
 static int
@@ -680,6 +932,9 @@ static int
 limport_value(lua_State *L) {
 	size_t sz = 0;
 	const uint8_t * data = (const uint8_t *)luaL_checklstring(L, 1, &sz);
+	if(!data) {
+		data = (const uint8_t *)luaL_checklstring(L, 1, &sz);
+	}
 	int off = luaL_checkinteger(L, 2) - 1;
 	int len = 0;
 	const char * type = luaL_checkstring(L,3);
@@ -734,7 +989,29 @@ limport_value(lua_State *L) {
 	return 2;
 }
 
-#endif // EXPORT_EP
+static int
+ldump_bin(lua_State *L) {
+	size_t sz;
+	const char *bin;
+	if(lua_isstring(L, 1)) {
+		size_t ssz;
+		bin = (const char*)luaL_checklstring(L, 1, &ssz);
+		sz = (size_t)luaL_checkinteger(L, 2);
+		sz = sz <= ssz ? sz : ssz;
+	} else {
+		bin = (const char*)lua_touserdata(L, 1);
+		if(!bin) {
+			return luaL_error(L, "dump_bin need char *");
+		}
+		sz = (size_t)luaL_checkinteger(L, 2);
+	}
+	size_t i;
+	for(i=0; i<sz; ++i) {
+		printf("%02X ", (uint8_t)bin[i]);
+		if(i % 16 == 15) printf("\n");
+	}
+	return 0;
+}
 
 int
 ejoy2d_spritepack(lua_State *L) {
@@ -753,11 +1030,10 @@ ejoy2d_spritepack(lua_State *L) {
 		{ "string_size" , lstring_size },
 		{ "label_size", llabel_size },
 		{ "pannel_size", lpannel_size },
-#ifndef EXPORT_EP
 		{ "import", limport },
 		{ "import_value", limport_value },
 		{ "dump", ldumppack },
-#endif // EXPORT_EP
+		{ "dump_bin", ldump_bin },
 		{ NULL, NULL },
 	};
 
@@ -775,6 +1051,10 @@ ejoy2d_spritepack(lua_State *L) {
 	lua_setfield(L, -2, "TYPE_PANNEL");
 	lua_pushinteger(L, TYPE_MATRIX);
 	lua_setfield(L, -2, "TYPE_MATRIX");
+	lua_pushinteger(L, TYPE_PARTICLE3D);
+	lua_setfield(L, -2, "TYPE_PARTICLE3D");
+	lua_pushinteger(L, TYPE_PARTICLE2D);
+	lua_setfield(L, -2, "TYPE_PARTICLE2D");
 
 	return 1;
 }

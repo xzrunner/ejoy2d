@@ -4,6 +4,8 @@
 #include "block.h"
 #include "log.h"
 
+#include <dtex.h>
+
 #include <assert.h>
 #include <stdint.h>
 #include <string.h>
@@ -388,6 +390,12 @@ render_release(struct render *R, enum RENDER_OBJ what, RID id) {
 	case TEXTURE : {
 		struct texture * tex = (struct texture *) array_ref(&R->texture, id);
 		if (tex) {
+			for (int i = 0; i < MAX_TEXTURE; ++i) {
+				RID last = R->last.texture[i];
+				if (last == id) {
+					R->last.texture[i] = 0;
+				}
+			}
 			close_texture(tex, R);
 			array_free(&R->texture, tex);
 		}
@@ -434,6 +442,19 @@ render_set(struct render *R, enum RENDER_OBJ what, RID id, int slot) {
 	default:
 		assert(0);
 		break;
+	}
+}
+
+RID 
+render_get(struct render *R, enum RENDER_OBJ what, int slot) {
+	switch (what) {
+	case TEXTURE:
+		return R->current.texture[slot];
+	case TARGET:
+		return R->current.target;
+	default:
+		assert(0);
+		return 0;
 	}
 }
 
@@ -999,31 +1020,6 @@ render_state_reset(struct render *R) {
 	CHECK_GL_ERROR
 }
 
-// draw
-void 
-render_draw(struct render *R, enum DRAW_MODE mode, int fromidx, int ni) {
-	static int draw_mode[] = {
-		GL_TRIANGLES,
-		GL_LINES,
-	};
-	assert((int)mode < sizeof(draw_mode)/sizeof(int));
-	render_state_commit(R);
-	RID ib = R->indexbuffer;
-	struct buffer * buf = (struct buffer *)array_ref(&R->buffer, ib);
-	if (buf) {
-		assert(fromidx + ni <= buf->n);
-		int offset = fromidx;
-		GLenum type = GL_UNSIGNED_SHORT;
-		if (buf->stride == 1) {
-			type = GL_UNSIGNED_BYTE;
-		} else {
-			offset *= sizeof(short);
-		}
-		glDrawElements(draw_mode[mode], ni, type, (char *)0 + offset);
-		CHECK_GL_ERROR
-	}
-}
-
 void
 render_clear(struct render *R, enum CLEAR_MASK mask, unsigned long c) {
 	GLbitfield m = 0;
@@ -1044,6 +1040,55 @@ render_clear(struct render *R, enum CLEAR_MASK mask, unsigned long c) {
 	render_state_commit(R);
 	glClear(m);
 
+	CHECK_GL_ERROR
+}
+
+// draw
+void 
+render_draw_elements(struct render *R, enum DRAW_MODE mode, int fromidx, int ni) {
+	static int draw_mode[] = {
+		GL_POINTS,
+		GL_LINES,
+		GL_LINE_LOOP,
+		GL_LINE_STRIP,
+		GL_TRIANGLES,
+		GL_TRIANGLE_STRIP,
+		GL_TRIANGLE_FAN,
+		GL_QUADS,
+	};
+	assert((int)mode < sizeof(draw_mode)/sizeof(int));
+	render_state_commit(R);
+	RID ib = R->indexbuffer;
+	struct buffer * buf = (struct buffer *)array_ref(&R->buffer, ib);
+	if (buf) {
+		assert(fromidx + ni <= buf->n);
+		int offset = fromidx;
+		GLenum type = GL_UNSIGNED_SHORT;
+		if (buf->stride == 1) {
+			type = GL_UNSIGNED_BYTE;
+		} else {
+			offset *= sizeof(short);
+		}
+		glDrawElements(draw_mode[mode], ni, type, (char *)0 + offset);
+		CHECK_GL_ERROR
+	}
+}
+
+void 
+render_draw_arrays(struct render *R, enum DRAW_MODE mode, int fromidx, int ni) {
+	static int draw_mode[] = {
+		GL_POINTS,
+		GL_LINES,
+		GL_LINE_LOOP,
+		GL_LINE_STRIP,
+		GL_TRIANGLES,
+		GL_TRIANGLE_STRIP,
+		GL_TRIANGLE_FAN,
+		GL_QUADS,
+	};
+	assert((int)mode < sizeof(draw_mode)/sizeof(int));
+	render_state_commit(R);
+	glDrawArrays(draw_mode[mode], 0, ni);
 	CHECK_GL_ERROR
 }
 
@@ -1081,6 +1126,9 @@ render_shader_setuniform(struct render *R, int loc, enum UNIFORM_FORMAT format, 
 	case UNIFORM_FLOAT44:
 		glUniformMatrix4fv(loc, 1, GL_FALSE, v);
 		break;
+	case UNIFORM_INT1:
+		glUniform1i(loc, (int)v[0]);
+		break;
 	default:
 		assert(0);
 		return;
@@ -1091,4 +1139,21 @@ render_shader_setuniform(struct render *R, int loc, enum UNIFORM_FORMAT format, 
 int 
 render_version(struct render *R) {
 	return OPENGLES;
+}
+
+int 
+render_get_texture_gl_id(struct render *R, RID id) {
+	struct texture * tex = (struct texture *)array_ref(&R->texture, id);
+	if (tex == NULL) {
+		return 0;
+	} else {
+		return tex->glid;
+	}
+}
+
+int 
+render_query_target() {
+	GLint fbo = 0;
+	glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fbo);
+	return fbo;
 }

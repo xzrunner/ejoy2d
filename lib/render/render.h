@@ -97,11 +97,17 @@ enum UNIFORM_FORMAT {
 	UNIFORM_FLOAT4,
 	UNIFORM_FLOAT33,
 	UNIFORM_FLOAT44,
+	UNIFORM_INT1,
 };
 
 enum DRAW_MODE {
-	DRAW_TRIANGLE = 0,
-	DRAW_LINE,
+	DRAW_POINTS = 0,
+	DRAW_LINES,
+	DRAW_LINE_LOOP,
+	DRAW_LINE_STRIP,
+	DRAW_TRIANGLES,
+	DRAW_TRIANGLE_STRIP,
+	DRAW_TRIANGLE_FAN,
 };
 
 enum CULL_MODE {
@@ -116,6 +122,7 @@ struct render * render_init(struct render_init_args *args, void * buffer, int sz
 void render_exit(struct render * R);
 
 void render_set(struct render *R, enum RENDER_OBJ what, RID id, int slot);
+RID render_get(struct render *R, enum RENDER_OBJ what, int slot);
 void render_release(struct render *R, enum RENDER_OBJ what, RID id);
 
 RID render_register_vertexlayout(struct render *R, int n, struct vertex_attrib * attrib);
@@ -150,6 +157,12 @@ void render_enablescissor(struct render *R, int enable);
 void render_state_reset(struct render *R);
 
 void render_clear(struct render *R, enum CLEAR_MASK mask, unsigned long argb);
-void render_draw(struct render *R, enum DRAW_MODE mode, int fromidx, int ni);
+void render_draw_elements(struct render *R, enum DRAW_MODE mode, int fromidx, int ni);
+void render_draw_arrays(struct render *R, enum DRAW_MODE mode, int fromidx, int ni);
+
+// todo
+int render_get_texture_gl_id(struct render *R, RID id);
+
+int render_query_target();
 
 #endif

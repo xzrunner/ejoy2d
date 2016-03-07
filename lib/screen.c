@@ -1,6 +1,11 @@
 #include "screen.h"
 #include "render.h"
 #include "spritepack.h"
+#include "adapter/ej_shaderlab.h"
+
+#include <dtex.h>
+#include <rvg.h>
+#include <shaderlab.h>
 
 struct screen {
 	int width;
@@ -11,11 +16,9 @@ struct screen {
 };
 
 static struct screen SCREEN;
-static struct render *R = NULL;
 
 void 
-screen_initrender(struct render *r) {
-	R = r;
+screen_initrender() {
 	// for ejoy2d compatibility, ejoy2d may call screen_init before screen_initrender
 	screen_init(SCREEN.width, SCREEN.height, SCREEN.scale);
 }
@@ -27,9 +30,12 @@ screen_init(float w, float h, float scale) {
 	SCREEN.scale = scale;
 	SCREEN.invw = 2.0f / SCREEN_SCALE / w;
 	SCREEN.invh = -2.0f / SCREEN_SCALE / h;
-	if (R) {
-		render_setviewport(R, 0, 0, w * scale, h * scale );
-	}
+	render_setviewport(sl_shader_get_render(), 0, 0, w * scale, h * scale );
+
+	dtex_set_screen(w, h, scale);
+// 	rvg_shader_projection(w, h);
+// 	rvg_shader_modelview(-w*0.5f, -h*0.5f, 1, -1);
+	ej_sl_on_size(2, 2);
 }
 
 void
@@ -64,7 +70,7 @@ screen_scissor(int x, int y, int w, int h) {
 	w *= SCREEN.scale;
 	h *= SCREEN.scale;
 
-	render_setscissor(R,x,y,w,h);
+	render_setscissor(sl_shader_get_render(),x,y,w,h);
 }
 
 bool screen_is_visible(float x,float y)

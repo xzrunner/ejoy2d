@@ -1,6 +1,7 @@
 #include "scissor.h"
 #include "screen.h"
-#include "shader.h"
+
+#include "shaderlab.h"
 
 #include <assert.h>
 
@@ -20,7 +21,7 @@ struct scissor {
 
 static struct scissor S;
 
-static void
+void
 intersection(struct box * b, int * x, int * y, int * w, int * h) {
 	int newx = b->x > *x ? b->x : *x;
 	int newy = b->y > *y ? b->y : *y;
@@ -41,9 +42,9 @@ intersection(struct box * b, int * x, int * y, int * w, int * h) {
 void 
 scissor_push(int x, int y, int w, int h) {
 	assert(S.depth < SCISSOR_MAX);
-	shader_flush();
+	sl_shader_flush();
 	if (S.depth == 0) {
-		shader_scissortest(1);
+		sl_shader_scissortest(1);
 	}
   
 	if (S.depth >= 1) {
@@ -61,10 +62,10 @@ scissor_push(int x, int y, int w, int h) {
 void 
 scissor_pop() {
 	assert(S.depth > 0);
-	shader_flush();
+	sl_shader_flush();
 	--S.depth;
 	if (S.depth == 0) {
-		shader_scissortest(0);
+		sl_shader_scissortest(0);
 		return;
 	}
 	struct box * s = &S.s[S.depth-1];

@@ -1,24 +1,47 @@
 #ifndef EJOY_2D_SPRITE_PACK_H
 #define EJOY_2D_SPRITE_PACK_H
 
+#include "ps_3d.h"
+#include "ps_2d.h"
+
 #include <lua.h>
 #include <stdint.h>
 
-#define TYPE_EMPTY 0
-#define TYPE_PICTURE 1
-#define TYPE_ANIMATION 2
-#define TYPE_POLYGON 3
-#define TYPE_LABEL 4
-#define TYPE_PANNEL 5
-#define TYPE_ANCHOR 6
-#define TYPE_MATRIX 7
+#define TYPE_EMPTY			0
+#define TYPE_PICTURE		1
+#define TYPE_ANIMATION		2
+#define TYPE_POLYGON		3
+#define TYPE_LABEL			4
+#define TYPE_PANNEL			5
+#define TYPE_ANCHOR			6
+#define TYPE_MATRIX			7
+#define TYPE_PARTICLE3D		8
+#define TYPE_PARTICLE2D		9
+#define TYPE_P3D_SPR		10
+#define TYPE_P2D_SPR		11
+#define TYPE_SHAPE			12
 
 #define ANCHOR_ID 0xffff
 #define SCREEN_SCALE 16
 
+// binary package should reserve more bytes for 64bit platform
+#define PTR_SIZE_DIFF (8 - sizeof(void *))
+#define SIZEOF_POINTER 8
+
+#define SIZEOF_PARTICLE3D SIZEOF_P3D_EMITTER_CFG
+#define SIZEOF_PARTICLE2D SIZEOF_P2D_EMITTER_CFG
+
+struct pack_p3d_spr {
+	int id;
+	uint8_t loop;
+	uint8_t local;
+	uint8_t alone;
+	uint8_t reuse;
+};
+
+#define SIZEOF_P3D_SPR (sizeof(struct pack_p3d_spr))
+
 struct matrix;
-typedef uint32_t offset_t;
-typedef uint16_t uv_t;
 
 #define SIZEOF_MATRIX (sizeof(struct matrix))
 
@@ -31,22 +54,32 @@ struct pack_pannel {
 #define SIZEOF_PANNEL (sizeof(struct pack_pannel))
 
 struct pack_label {
-	uint32_t color;
 	int width;
 	int height;
-	int align;
-	int size;
+
+	int font;
+	int font_size;
+	uint32_t font_color;
+
 	int edge;
-    int space_h;
-    int space_w;
-    int auto_scale;
+	float edge_size;
+	uint32_t edge_color;
+
+	int align_hori;
+	int align_vert;
+
+	float space_hori;
+	float space_vert;
+
+	const char* text;
+	const char* tid;
 };
 
-#define SIZEOF_LABEL (sizeof(struct pack_label))
+#define SIZEOF_LABEL (sizeof(struct pack_label) + PTR_SIZE_DIFF * 2)
 
 struct pack_quad {
 	int texid;
-	uv_t texture_coord[8];
+	uint16_t texture_coord[8];
 	int32_t screen_coord[8];
 };
 
@@ -59,92 +92,99 @@ struct pack_picture {
 
 #define SIZEOF_PICTURE (sizeof(struct pack_picture) - sizeof(struct pack_quad))
 
-struct pack_poly_data {
-	offset_t texture_coord;	// uv_t *
-	offset_t screen_coord;	// int32_t *
+struct pack_shape {
+	int type;
+	uint32_t color;
+	int num;
+	int32_t* vertices;
+};
+
+#define SIZEOF_SHAPE (sizeof(struct pack_shape) + 2 * PTR_SIZE_DIFF)
+
+struct pack_poly {
+	uint16_t *texture_coord;
+	int32_t *screen_coord;
 	int texid;
 	int n;
 };
 
-#define SIZEOF_POLY (sizeof(struct pack_poly_data))
+#define SIZEOF_POLY (sizeof(struct pack_poly) + 2 * PTR_SIZE_DIFF)
 
-struct pack_polygon_data {
+struct pack_polygon {
 	int n;
-	struct pack_poly_data poly[1];
+	int _dummy;		// unused: dummy for align to 64bit
+	struct pack_poly poly[1];
 };
 
-#define SIZEOF_POLYGON (sizeof(struct pack_polygon_data) - sizeof(struct pack_poly_data))
+#define SIZEOF_POLYGON (sizeof(struct pack_polygon) - sizeof(struct pack_poly))
 
 struct sprite_trans {
 	struct matrix * mat;
 	uint32_t color;
 	uint32_t additive;
+	uint32_t rmap, gmap, bmap;
 	int program;
 };
 
-struct sprite_trans_data {
-	offset_t mat;
-	uint32_t color;
-	uint32_t additive;
-};
-
-#define SIZEOF_TRANS (sizeof(struct sprite_trans_data))
+#define SIZEOF_TRANS (sizeof(struct sprite_trans) + PTR_SIZE_DIFF)
 
 struct pack_part {
-	struct sprite_trans_data t;
-	int16_t component_id;
-	int16_t touchable;
+	struct sprite_trans t;
+	int component_id;
+	int touchable;
 };
 
-#define SIZEOF_PART (sizeof(struct pack_part))
+#define SIZEOF_PART (sizeof(struct pack_part) + SIZEOF_TRANS - sizeof(struct sprite_trans))
 
 struct pack_frame {
-	offset_t part;	// struct pack_part *
+	struct pack_part *part;
 	int n;
+	int _dummy;		// unused: dummy for align to 64bit
 };
 
-#define SIZEOF_FRAME (sizeof(struct pack_frame))
+#define SIZEOF_FRAME (sizeof(struct pack_frame) + PTR_SIZE_DIFF)
 
 struct pack_action {
-	offset_t name;	// const char *
-	int16_t number;
-	int16_t start_frame;
+	const char * name;
+	int number;
+	int start_frame;
 };
 
-#define SIZEOF_ACTION (sizeof(struct pack_action))
+#define SIZEOF_ACTION (sizeof(struct pack_action) + PTR_SIZE_DIFF)
 
 struct pack_component {
-	offset_t name;	// const char *
+	const char *name;
 	int id;
+	int _dummy;		// unused: dummy for align to 64bit
 };
 
-#define SIZEOF_COMPONENT (sizeof(struct pack_component))
+#define SIZEOF_COMPONENT (sizeof(struct pack_component) + PTR_SIZE_DIFF)
 
 struct pack_animation {
-	offset_t frame;	// struct pack_frame *
-	offset_t action;	// struct pack_action *
+	struct pack_frame *frame;
+	struct pack_action *action;
 	int frame_number;
 	int action_number;
 	int component_number;
+	int _dummy;		// unused: dummy for align to 64bit
 	struct pack_component component[1];
 };
 
-#define SIZEOF_ANIMATION (sizeof(struct pack_animation) - sizeof(struct pack_component))
+#define SIZEOF_ANIMATION (sizeof(struct pack_animation) + 2 * PTR_SIZE_DIFF - sizeof(struct pack_component))
 
 struct sprite_pack {
-	offset_t type;	// uint8_t *
-	offset_t data;	// void **
+	uint8_t * type;
+	void ** data;
 	int n;
+	int _dummy;		// unused: dummy for align to 64bit
 	int tex[2];
 };
 
-#define SIZEOF_PACK (sizeof(struct sprite_pack) - 2 * sizeof(int))
+#define SIZEOF_PACK (sizeof(struct sprite_pack) + 2 * PTR_SIZE_DIFF - 2 * sizeof(int))
 
 int ejoy2d_spritepack(lua_State *L);
 void dump_pack(struct sprite_pack *pack);
 
-#define OFFSET_TO_POINTER(t, pack, off) ((off == 0) ? NULL : (t*)((uintptr_t)(pack) + (off)))
-#define OFFSET_TO_STRING(pack, off) ((const char *)(pack) + (off))
-#define POINTER_TO_OFFSET(pack, ptr) ((ptr == NULL) ? 0 : (offset_t)((uintptr_t)(ptr) - (uintptr_t)pack))
+struct sprite_pack* ej_pkg_import(void* data, int sz, int texture, int max_id, int cap);
 
 #endif
